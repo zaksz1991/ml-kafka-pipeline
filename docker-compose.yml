@@ -1,0 +1,127 @@
+# docker-compose.yml
+# ------------------
+# Orchestrates the full pipeline:
+#   zookeeper  — coordination service required by Kafka (manages broker metadata)
+#   kafka      — the message broker (topics: ml-requests, ml-predictions)
+#   api        — FastAPI prediction service (synchronous REST entry point)
+#   consumer   — long-running process: reads ml-requests, calls api, writes ml-predictions
+#   producer   — one-shot job: sends 10 sample requests, then exits
+#
+# All services share the 'ml-network' bridge network so they can reach each
+# other by service name (e.g. the consumer calls http://api:8000/predict,
+# NOT http://localhost:8000 — container DNS resolves service names, not
+# the host's localhost).
+
+services:
+
+  # ── Zookeeper ──────────────────────────────────────────────────────────
+  # Required by this Kafka version for broker coordination and leader
+  # election. (Newer Kafka releases support a Zookeeper-less "KRaft" mode,
+  # but the classic Zookeeper-based setup remains the most widely
+  # documented and is used here for clarity and compatibility.)
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    networks:
+      - ml-network
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo ruok | nc localhost 2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Kafka Broker ───────────────────────────────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      # Two listener names: one for inter-container traffic (PLAINTEXT,
+      # resolved via the 'kafka' service name), one for host-machine
+      # access from outside Docker (PLAINTEXT_HOST, via localhost).
+      # This dual-listener setup is what allows you to also run
+      # kafka_client.py directly from your host machine during debugging.
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    networks:
+      - ml-network
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ── FastAPI Prediction Service ────────────────────────────────────────
+  api:
+    build: .
+    container_name: api
+    ports:
+      - "8000:8000"
+    networks:
+      - ml-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── Kafka Consumer (long-running) ─────────────────────────────────────
+  # Subscribes to ml-requests, calls the api service, publishes to
+  # ml-predictions, and prints each result to the console — this console
+  # output is what the Action Phase screenshot captures.
+  consumer:
+    build: .
+    container_name: consumer
+    command: ["python", "kafka_client.py", "consumer"]
+    environment:
+      KAFKA_BROKER: kafka:29092
+      API_URL: http://api:8000/predict
+    depends_on:
+      kafka:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    networks:
+      - ml-network
+    restart: on-failure
+
+  # ── Kafka Producer (one-shot) ──────────────────────────────────────────
+  # Sends 10 sample Iris feature vectors to ml-requests, then exits.
+  # Run on-demand with: docker-compose run producer
+  # (Defined as a service rather than only documented as a manual command
+  # so it benefits from the same network, env vars, and build context.)
+  producer:
+    build: .
+    container_name: producer
+    command: ["python", "kafka_client.py", "producer"]
+    environment:
+      KAFKA_BROKER: kafka:29092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - ml-network
+    profiles:
+      - manual   # excluded from `docker compose up`; run explicitly (see README)
+
+networks:
+  ml-network:
+    driver: bridge
+

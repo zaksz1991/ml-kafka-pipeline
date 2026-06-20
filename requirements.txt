@@ -1,0 +1,23 @@
+# ML Deployment Docker Kafka Pipeline — Requirements
+# Install with: pip install -r requirements.txt
+
+# Model training and serving
+scikit-learn==1.5.0
+joblib==1.4.2
+numpy==1.26.4
+
+# API
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+pydantic==2.7.1
+
+# Kafka client
+# NOTE: the original 'kafka-python' package is unmaintained and has a known
+# import-time crash on Python 3.12+ (kafka.vendor.six.moves). We use the
+# actively-maintained drop-in fork 'kafka-python-ng', which exposes the
+# identical `kafka` import namespace (KafkaProducer, KafkaConsumer,
+# NoBrokersAvailable, etc.) so no code changes are required.
+kafka-python-ng==2.2.3
+
+# Consumer -> API HTTP calls
+requests==2.32.3

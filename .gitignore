@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Model artifacts generated at Docker build time
+# (kept OUT of git since the Dockerfile regenerates them via `RUN python train_model.py`
+# — committing them would let the repo drift from what the build actually produces)
+model.pkl
+class_labels.json
+
+# Docker
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
